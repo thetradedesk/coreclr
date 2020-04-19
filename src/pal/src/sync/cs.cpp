@@ -1272,10 +1272,10 @@ namespace CorUnix
     {
         // wait until iPredicate becomes 1
         futex_wait(&pPalCriticalSection->csndNativeData.iPredicate, 0 /* expected_val */);
-        _ASSERTE(pPalCriticalSection->csndNativeData.iPredicate == 1);
 
         // set iPredicate back to 0
-        pPalCriticalSection->csndNativeData.iPredicate = 0;
+        int iOldVal = __atomic_exchange_n(&pPalCriticalSection->csndNativeData.iPredicate, 0, __ATOMIC_ACQUIRE);
+        _ASSERTE(iOldVal == 1);
         return NO_ERROR;
     }
 #else // FUTEX_CSS
@@ -1349,7 +1349,7 @@ namespace CorUnix
     --*/
     PAL_ERROR PALCS_WakeUpWaiter(PAL_CRITICAL_SECTION * pPalCriticalSection)
     {
-        pPalCriticalSection->csndNativeData.iPredicate = 1;
+        __atomic_store_n(&pPalCriticalSection->csndNativeData.iPredicate, 1, __ATOMIC_RELEASE);
         int num_waiters = futex_wake(&pPalCriticalSection->csndNativeData.iPredicate, 1 /* num_waiters */);
         // by design we only call this function when there are at least 1 remaining waiter waiting
         _ASSERTE(num_waiters == 1);

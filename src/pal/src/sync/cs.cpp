@@ -23,6 +23,40 @@
 #include <sched.h>
 #include <pthread.h>
 
+#define FUTEX_BASED_CSS
+
+#if defined(__linux__) && defined(FUTEX_BASED_CSS)
+#include <linux/futex.h>
+
+// futex system call wrapper
+int futex(int *uaddr, int futex_op, int val) {
+    return syscall(SYS_futex, uaddr, futex_op, val, NULL /*timeout*/, NULL /*uaddr2*/, 0 /*val3*/);
+}
+
+// wait until *futex_addr not equal to the expected_val
+void futex_wait(int *futex_addr, int expected_val) {
+    while (*futex_addr == expected_val) {
+        int rc = futex(futex_addr, FUTEX_WAIT_PRIVATE, expected_val);
+        if (rc == 0) {
+            // observed a different value than expected_val, this is the real wakeup
+            if (*futex_addr != expected_val) return;
+        }
+        else {
+            _ASSERTE(rc == -1 && errno == EAGAIN);
+            return;
+        }
+    }
+}
+
+// wake up other futex waiters on the futex addr
+int futex_wake(int *futex_addr, int num_waiters) {
+    int rc = futex(futex_addr, FUTEX_WAKE_PRIVATE, num_waiters);
+    _ASSERTE(rc >= 0);
+    return rc; /* number of waiters woke up */
+}
+
+#endif
+
 using namespace CorUnix;
 
 //
@@ -1086,6 +1120,10 @@ namespace CorUnix
                 goto PCDI_exit;
             }
 
+#ifdef FUTEX_BASED_CSS
+            // Predicate. No need to initialize pthread_mutex and pthread_cond
+            pPalCriticalSection->csndNativeData.iPredicate = 0;
+#else // FUTEX_BASED_CSS
             //
             // Actual native initialization
             //
@@ -1114,6 +1152,7 @@ namespace CorUnix
             // Predicate
             pPalCriticalSection->csndNativeData.iPredicate = 0;
 #endif
+#endif // FUTEX_BASED_CSS
 
             pPalCriticalSection->cisInitState = PalCsFullyInitialized;
         }
@@ -1222,6 +1261,24 @@ namespace CorUnix
         return PalCsReturnWaiterAwakened;
     }
 
+#ifdef FUTEX_BASED_CSS
+    /*++
+    Function:
+      CorUnix::PALCS_DoActualWait
+
+    Performs the actual native wait on the CS, using Linux futex syscall
+    --*/
+    PAL_ERROR PALCS_DoActualWait(PAL_CRITICAL_SECTION * pPalCriticalSection)
+    {
+        // wait until iPredicate becomes 1
+        futex_wait(&pPalCriticalSection->csndNativeData.iPredicate, 0 /* expected_val */);
+        _ASSERTE(pPalCriticalSection->csndNativeData.iPredicate == 1);
+
+        // set iPredicate back to 0
+        pPalCriticalSection->csndNativeData.iPredicate = 0;
+        return NO_ERROR;
+    }
+#else // FUTEX_CSS
     /*++
     Function:
       CorUnix::PALCS_DoActualWait
@@ -1281,7 +1338,24 @@ namespace CorUnix
 
         return palErr;
     }
+#endif
 
+#ifdef FUTEX_BASED_CSS
+    /*++
+    Function:
+      CorUnix::PALCS_WakeUpWaiter
+
+    Wakes up the first thread waiting on the CS
+    --*/
+    PAL_ERROR PALCS_WakeUpWaiter(PAL_CRITICAL_SECTION * pPalCriticalSection)
+    {
+        pPalCriticalSection->csndNativeData.iPredicate = 1;
+        int num_waiters = futex_wake(&pPalCriticalSection->csndNativeData.iPredicate, 1 /* num_waiters */);
+        // by design we only call this function when there are at least 1 remaining waiter waiting
+        _ASSERTE(num_waiters == 1);
+        return NO_ERROR;
+    }
+#else // FUTEX_CSS
     /*++
     Function:
       CorUnix::PALCS_WakeUpWaiter
@@ -1332,7 +1406,8 @@ namespace CorUnix
     PCWUW_exit:
         return palErr;
     }
-    
+#endif
+
 #ifdef _DEBUG
     /*++
     Function:

@@ -5390,6 +5390,29 @@ struct ExecutionState
     ExecutionState() : m_FirstPass(TRUE) {LIMITED_METHOD_CONTRACT;  }
 };
 
+static
+bool MyIsLegalRetAddr(PCODE retAddr) {
+    WRAPPER_NO_CONTRACT;
+
+    UINT64 *p = (UINT64*)(BYTE*)PTR_BYTE(retAddr);
+
+    // A valid return addr cannot be a NULL pointer
+    if (p == NULL)
+        return false;
+
+    // A valid return addr cannot point to zeroed memory
+    if (*p == 0)
+        return false;
+
+    // A valid return addr should not point to a pointer like memory location
+    // This is overly protective, and it is not cross-platform portable.
+    // Not sure if there are false negative here. Will test in prod to see.
+    if ((*p >> 40) == 0x00007f)
+        return false;
+
+    return true;
+}
+
 // Client is responsible for suspending the thread before calling
 void Thread::HijackThread(VOID *pvHijackAddr, ExecutionState *esb)
 {
@@ -5430,11 +5453,19 @@ void Thread::HijackThread(VOID *pvHijackAddr, ExecutionState *esb)
     // Remember the place that the return would have gone
     m_pvHJRetAddr = *esb->m_ppvRetAddrPtr;
 
+    // This assert actually fail for nullptr, but assert was silent under Release build
     IS_VALID_CODE_PTR((FARPROC) (TADDR)m_pvHJRetAddr);
-    // TODO [DAVBR]: For the full fix for VsWhidbey 450273, the below
-    // may be uncommented once isLegalManagedCodeCaller works properly
-    // with non-return address inputs, and with non-DEBUG builds
-    //_ASSERTE(isLegalManagedCodeCaller((TADDR)m_pvHJRetAddr));
+
+    // Protective check for DIST-2873
+    if (!MyIsLegalRetAddr((TADDR)m_pvHJRetAddr))
+    {
+        _ASSERTE(MyIsLegalRetAddr((TADDR)m_pvHJRetAddr));
+        STRESS_LOG2(LF_SYNC, LL_INFO10, "Bad hijacking return address 0x%p for thread %p\n", m_pvHJRetAddr, this);
+
+        // Forcing a segfault here
+        *((int*)nullptr) = 0;
+    }
+
     STRESS_LOG2(LF_SYNC, LL_INFO100, "Hijacking return address 0x%p for thread %p\n", m_pvHJRetAddr, this);
 
     // Remember the method we're executing
@@ -6728,6 +6759,10 @@ void HandleGCSuspensionForInterruptedThread(CONTEXT *interruptedContext)
         BOOL unused;
 
         if (IsIPInEpilog(interruptedContext, &codeInfo, &unused))
+            return;
+
+        // The fix for DIST-2873
+        if (IsIPInProlog(&codeInfo))
             return;
 
         // Use StackWalkFramesEx to find the location of the return address. This will locate the

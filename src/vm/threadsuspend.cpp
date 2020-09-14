@@ -6741,6 +6741,31 @@ void HandleGCSuspensionForInterruptedThread(CONTEXT *interruptedContext)
         if (IsIPInEpilog(interruptedContext, &codeInfo, &unused))
             return;
 
+        // Workaround for linux, which produces the following prolog for JIT functions,
+        // with several pages of stack memory allocated for local variables, due to aggressive inlining.
+        //
+        // 00007f524147be50 55               push rbp
+        // 00007f524147be51 4157             push r15
+        // 00007f524147be53 4156             push r14
+        // 00007f524147be55 4155             push r13
+        // 00007f524147be57 4154             push r12
+        // 00007f524147be59 53               push rbx
+        // 00007f524147be5a 488d84240857ffff lea rax, [rsp - 0xa8f8]
+        // 00007f524147be62 488da42400f0ffff lea rsp, [rsp - 0x1000]
+        // 00007f524147be6a 48850424         test qword ptr [rsp], rax
+        // >>> 00007f524147be6e 483be0       cmp rsp, rax
+        // 00007f524147be71 7def             jge 0x7f524147be62
+        // 00007f524147be73 488da0f8a80000   lea rsp, [rax + 0xa8f8]
+        // 00007f524147be7a 4881ecf8a80000   sub rsp, 0xa8f8
+        // 00007f524147be81 c5f877           vzeroupper
+        // 00007f524147be84 488dac2420a90000 lea rbp, [rsp + 0xa920]
+        //
+        // If hijack happens at above IP, it confuses StackWalkFramesEx below to produce
+        // incorrect stack pointer to return address.
+        //
+        if (IsIPInProlog(&codeInfo))
+            return;
+
         // Use StackWalkFramesEx to find the location of the return address. This will locate the
         // return address by checking relative to the caller frame's SP, which is preferable to
         // checking next to the current RBP because we may have interrupted the function prior to

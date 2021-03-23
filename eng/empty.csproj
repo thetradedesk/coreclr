@@ -9,6 +9,10 @@
   -->
 
   <PropertyGroup>
+
+    <!-- These are required to build with later .Net toolsets -->
+    <NoWarn>$(NoWarn);NETSDK1138</NoWarn>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
     <TargetFramework>netcoreapp2.0</TargetFramework>
   </PropertyGroup>
 

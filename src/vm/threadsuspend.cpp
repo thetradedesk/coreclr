@@ -6728,19 +6728,6 @@ void HandleGCSuspensionForInterruptedThread(CONTEXT *interruptedContext)
         BOOL unused;
 
 #if defined(FEATURE_PAL) && (defined(_TARGET_AMD64_) || defined(_TARGET_X86_))
-        // Stack probing loop that JIT generates in prolog on x64 / x86 Unix for methods with
-        // large frame is not unwindable, so it is not possible to get the return address location
-        // for hijacking.
-        // This is a hotfix for release/3.1 only.
-        if (IsIPInProlog(&codeInfo) && codeInfo.GetFixedStackSize() >= 0x3000)
-        {
-            return;
-        }
-#endif // _TARGET_UNIX_ && (TARGET_AMD64 || TARGET_X86)
-
-        if (IsIPInEpilog(interruptedContext, &codeInfo, &unused))
-            return;
-
         // Workaround for linux, which produces the following prolog for JIT functions,
         // with several pages of stack memory allocated for local variables, due to aggressive inlining.
         //
@@ -6763,8 +6750,16 @@ void HandleGCSuspensionForInterruptedThread(CONTEXT *interruptedContext)
         // If hijack happens at above IP, it confuses StackWalkFramesEx below to produce
         // incorrect stack pointer to return address.
         //
-        if (IsIPInProlog(&codeInfo))
+        // Stack probing loop that JIT generates in prolog on x64 / x86 Unix for methods with
+        // large frame is not unwindable, so it is not possible to get the return address location
+        // for hijacking.
+	//
+        // This is a hotfix for release/3.1 only.
+        if (IsIPInProlog(&codeInfo) && codeInfo.GetFixedStackSize() >= 0x3000)
+        {
             return;
+        }
+#endif // _TARGET_UNIX_ && (TARGET_AMD64 || TARGET_X86)
 
         // Use StackWalkFramesEx to find the location of the return address. This will locate the
         // return address by checking relative to the caller frame's SP, which is preferable to
